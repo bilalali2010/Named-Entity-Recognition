@@ -1,45 +1,30 @@
 import streamlit as st
-import requests
 from transformers import pipeline
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
-import json
 from collections import Counter
 import re
 
 # Set page configuration
 st.set_page_config(
-    page_title="NER with Hugging Face",
+    page_title="NER with RoBERTa",
     page_icon="🤖",
     layout="wide"
 )
 
 # Title and description
-st.title("🔍 Named Entity Recognition (NER) with Hugging Face")
+st.title("🔍 Named Entity Recognition (NER) with RoBERTa")
 st.markdown("""
-This app performs Named Entity Recognition (NER) using pre-trained models from Hugging Face.
-Paste your text below or try the example to extract entities like persons, organizations, and locations.
+This app performs Named Entity Recognition using the **Jean-Baptiste/roberta-large-ner-english** model from Hugging Face.
+This model is specifically trained for high-accuracy entity detection in English text.
 """)
-
-# Sidebar for configuration
-st.sidebar.header("Configuration")
-model_option = st.sidebar.selectbox(
-    "Choose a model",
-    [
-        "dslim/bert-base-NER", 
-        "dbmdz/bert-large-cased-ner-english", 
-        "Jean-Baptiste/roberta-large-ner-english",
-        "Davlan/bert-base-multilingual-cased-ner-hrl",
-        "Babelscape/wikineural-multilingual-ner"
-    ]
-)
 
 # Entity type mapping with full forms
 ENTITY_FULL_FORMS = {
     'PER': 'Person',
-    'ORG': 'Organization',
+    'ORG': 'Organization', 
     'LOC': 'Location',
     'MISC': 'Miscellaneous',
     'B-PER': 'Beginning of Person',
@@ -55,13 +40,8 @@ ENTITY_FULL_FORMS = {
 # Text cleaning function
 def clean_text(text):
     """Clean and preprocess input text"""
-    # Remove excessive whitespace but preserve meaningful punctuation
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
-
-# Add Hugging Face token input (optional)
-hf_token = st.sidebar.text_input("Hugging Face Token (optional)", type="password")
-st.sidebar.info("A token is only needed for private/gated models. The selected models are public.")
 
 # Add example text
 example_text = st.sidebar.selectbox(
@@ -77,40 +57,23 @@ example_text = st.sidebar.selectbox(
 
 # Initialize the NER pipeline
 @st.cache_resource(show_spinner=False)
-def load_ner_model(model_name, token):
+def load_ner_model():
     try:
-        if token:
-            nlp = pipeline("ner", model=model_name, token=token, aggregation_strategy="simple")
-        else:
-            nlp = pipeline("ner", model=model_name, aggregation_strategy="simple")
+        nlp = pipeline("ner", model="Jean-Baptiste/roberta-large-ner-english", aggregation_strategy="simple")
         return nlp
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
         return None
 
-# Filter and improve entity recognition
+# Filter entities
 def filter_entities(entities, confidence_threshold=0.7):
     filtered = []
     for ent in entities:
-        # Filter by confidence
         if ent['score'] < confidence_threshold:
             continue
-            
-        # Clean entity word
         word = ent['word'].strip()
-        if not word or len(word) < 2:  # Skip very short entities
+        if not word or len(word) < 2:
             continue
-            
-        # Fix common entity type issues
-        if ent['entity_group'] == 'ONG':
-            ent['entity_group'] = 'ORG'
-        
-        # Split merged entities (like "Austin Texas" should be two entities)
-        if ' ' in word and ent['entity_group'] in ['LOC', 'PER', 'ORG']:
-            # For certain cases, consider splitting but this is complex
-            # For now, we'll keep as is but note that better models handle this
-            pass
-            
         filtered.append(ent)
     return filtered
 
@@ -132,18 +95,13 @@ if example_text != "Select an example" and not input_text.strip():
 
 # Process the text when the button is clicked
 if st.button("Analyze Text") and input_text.strip():
-    with st.spinner("Loading model and processing text..."):
-        # Clean the input text
+    with st.spinner("Loading RoBERTa model and processing text..."):
         cleaned_text = clean_text(input_text)
-        
-        nlp = load_ner_model(model_option, hf_token)
+        nlp = load_ner_model()
         
         if nlp:
             try:
-                # Perform NER
                 results = nlp(cleaned_text)
-                
-                # Filter entities
                 filtered_results = filter_entities(results)
                 
                 if filtered_results:
@@ -152,53 +110,39 @@ if st.button("Analyze Text") and input_text.strip():
                     
                     with col1:
                         st.subheader("📋 Detected Entities")
-                        
-                        # Create a DataFrame with full forms
                         entities_data = []
                         for ent in filtered_results:
                             entities_data.append({
                                 'Entity': ent['word'],
                                 'Type': ent['entity_group'],
                                 'Full Form': get_entity_full_form(ent['entity_group']),
-                                'Confidence': ent['score']
+                                'Confidence': f"{ent['score']:.2%}"
                             })
                         
                         entities_df = pd.DataFrame(entities_data)
-                        
-                        # Format the confidence scores
-                        entities_df['Confidence'] = entities_df['Confidence'].apply(lambda x: f"{x:.2%}")
-                        
-                        # Display the dataframe with full forms
-                        st.dataframe(entities_df[['Entity', 'Type', 'Full Form', 'Confidence']], 
-                                   use_container_width=True, height=300)
+                        st.dataframe(entities_df, use_container_width=True, height=300)
                     
                     with col2:
                         st.subheader("📊 Entity Distribution")
-                        
-                        # Count entity types (using full forms for better readability)
                         entity_types = [ent['entity_group'] for ent in filtered_results]
                         type_counts = Counter(entity_types)
                         
-                        # Create a bar chart with proper scaling
                         if type_counts:
                             fig, ax = plt.subplots(figsize=(8, 5))
-                            
-                            # Get full forms for labels
                             labels = [get_entity_full_form(et) for et in type_counts.keys()]
                             values = list(type_counts.values())
                             
-                            bars = ax.bar(labels, values, 
-                                        color=['#FF6B6B', '#4ECDC4', '#FFE66D', '#C7C7C7'][:len(labels)])
+                            colors = ['#FF6B6B', '#4ECDC4', '#FFE66D', '#C7C7C7']
+                            bars = ax.bar(labels, values, color=colors[:len(labels)])
+                            
                             ax.set_ylabel('Count')
                             ax.set_xlabel('Entity Type')
                             ax.set_title('Entity Type Distribution')
                             
-                            # Set proper y-axis scale
-                            max_count = max(values)
+                            max_count = max(values) if values else 1
                             ax.set_ylim(0, max_count + 0.5)
                             ax.set_yticks(range(0, max_count + 1))
                             
-                            # Add value labels on bars
                             for bar in bars:
                                 height = bar.get_height()
                                 ax.text(bar.get_x() + bar.get_width()/2., height,
@@ -207,41 +151,23 @@ if st.button("Analyze Text") and input_text.strip():
                             plt.xticks(rotation=45, ha='right')
                             plt.tight_layout()
                             st.pyplot(fig)
-                        
-                        # Show entity type legend
-                        st.markdown("**Entity Type Legend:**")
-                        legend_html = """
-                        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                        <b>PER</b> - Person (Names of people)<br>
-                        <b>ORG</b> - Organization (Companies, institutions)<br>
-                        <b>LOC</b> - Location (Places, cities, countries)<br>
-                        <b>MISC</b> - Miscellaneous (Other entities)
-                        </div>
-                        """
-                        st.markdown(legend_html, unsafe_allow_html=True)
                     
-                    # Display the text with highlighted entities
+                    # Display highlighted text
                     st.subheader("🔦 Text with Highlighted Entities")
-                    
-                    # Color mapping for entity types
                     color_map = {
-                        'PER': '#FF6B6B',  # Red for persons
-                        'ORG': '#4ECDC4',  # Teal for organizations
-                        'LOC': '#FFE66D',  # Yellow for locations
-                        'MISC': '#C7C7C7'  # Gray for miscellaneous
+                        'PER': '#FF6B6B',
+                        'ORG': '#4ECDC4', 
+                        'LOC': '#FFE66D',
+                        'MISC': '#C7C7C7'
                     }
                     
-                    # Create HTML with highlighted entities
                     highlighted_text = cleaned_text
-                    # Sort by start index in reverse to avoid offset issues when replacing
                     for ent in sorted(filtered_results, key=lambda x: x['start'], reverse=True):
                         entity_type = ent['entity_group']
-                        full_form = get_entity_full_form(entity_type)
-                        color = color_map.get(entity_type, '#C7C7C7')  # Default to gray
+                        color = color_map.get(entity_type, '#C7C7C7')
                         label = f"<mark style='background-color: {color}; padding: 2px 4px; border-radius: 3px; margin: 2px;'>{ent['word']} ({entity_type})</mark>"
                         highlighted_text = highlighted_text[:ent['start']] + label + highlighted_text[ent['end']:]
                     
-                    # Display the highlighted text in a nice container
                     st.markdown(
                         f"""<div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #4ECDC4;">
                         {highlighted_text}
@@ -249,43 +175,37 @@ if st.button("Analyze Text") and input_text.strip():
                         unsafe_allow_html=True
                     )
                     
-                    # Show model information
-                    st.info(f"Using model: **{model_option}**")
+                    st.success("✅ Analysis complete using Jean-Baptiste/roberta-large-ner-english model")
                     
-                    # Show raw JSON output
-                    with st.expander("View raw output"):
-                        st.json(filtered_results)
-                
                 else:
-                    st.warning("No valid entities detected in the text. Try:")
-                    st.markdown("- A different model (try 'Jean-Baptiste/roberta-large-ner-english')")
-                    st.markdown("- Longer text with more named entities")
-                    st.markdown("- Clearer entity mentions (proper names)")
+                    st.warning("No entities detected. Try text with more named entities like people, organizations, or locations.")
                     
             except Exception as e:
-                st.error(f"Error during NER processing: {str(e)}")
-                st.info("Try selecting a different model from the sidebar.")
+                st.error(f"Error during processing: {str(e)}")
         else:
-            st.error("Failed to load the model. Please check your Hugging Face token if using a private model.")
+            st.error("Failed to load the model. Please check your internet connection.")
 
-# Add troubleshooting section
-with st.expander("🔧 Troubleshooting Tips"):
+# Model information
+with st.expander("ℹ️ About the RoBERTa NER Model"):
     st.markdown("""
-    **If entities are missing or incorrect:**
+    **Model:** Jean-Baptiste/roberta-large-ner-english
     
-    1. **Try different models**: Some models work better for specific types of text
-    2. **Check text quality**: Ensure proper capitalization and punctuation
-    3. **Longer text**: Models often perform better with more context
-    4. **Specific entities**: Some models are better at certain entity types
+    **Capabilities:**
+    - High accuracy for English text
+    - Detects Persons, Organizations, Locations, and Miscellaneous entities
+    - Handles complex entity boundaries well
+    - Good with proper nouns and capitalization
     
-    **Recommended models for better accuracy:**
-    - `Jean-Baptiste/roberta-large-ner-english` - Good overall performance
-    - `dbmdz/bert-large-cased-ner-english` - Better with capitalized entities
+    **Expected Output for Example Text:**
+    - "Elon Musk" → PER (Person)
+    - "Tesla, Inc." → ORG (Organization) 
+    - "Austin" → LOC (Location)
+    - "Texas" → LOC (Location)
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
-    "**Day 52 of the NLP & AI Beyond GPT series** | "
-    "Models provided by [Hugging Face](https://huggingface.co/)"
+    "**Day 52: Named Entity Recognition** | "
+    "Model: [Jean-Baptiste/roberta-large-ner-english](https://huggingface.co/Jean-Baptiste/roberta-large-ner-english)"
 )
