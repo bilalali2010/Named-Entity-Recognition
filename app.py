@@ -31,7 +31,8 @@ model_option = st.sidebar.selectbox(
         "dslim/bert-base-NER", 
         "dbmdz/bert-large-cased-ner-english", 
         "Jean-Baptiste/roberta-large-ner-english",
-        "Davlan/bert-base-multilingual-cased-ner-hrl"
+        "Davlan/bert-base-multilingual-cased-ner-hrl",
+        "Babelscape/wikineural-multilingual-ner"
     ]
 )
 
@@ -54,10 +55,8 @@ ENTITY_FULL_FORMS = {
 # Text cleaning function
 def clean_text(text):
     """Clean and preprocess input text"""
-    # Remove excessive whitespace
+    # Remove excessive whitespace but preserve meaningful punctuation
     text = re.sub(r'\s+', ' ', text)
-    # Remove special characters that might confuse the model
-    text = re.sub(r'[^\w\s@#]', ' ', text)
     return text.strip()
 
 # Add Hugging Face token input (optional)
@@ -89,7 +88,7 @@ def load_ner_model(model_name, token):
         st.error(f"Error loading model: {str(e)}")
         return None
 
-# Filter out low-confidence or invalid entities
+# Filter and improve entity recognition
 def filter_entities(entities, confidence_threshold=0.7):
     filtered = []
     for ent in entities:
@@ -105,6 +104,12 @@ def filter_entities(entities, confidence_threshold=0.7):
         # Fix common entity type issues
         if ent['entity_group'] == 'ONG':
             ent['entity_group'] = 'ORG'
+        
+        # Split merged entities (like "Austin Texas" should be two entities)
+        if ' ' in word and ent['entity_group'] in ['LOC', 'PER', 'ORG']:
+            # For certain cases, consider splitting but this is complex
+            # For now, we'll keep as is but note that better models handle this
+            pass
             
         filtered.append(ent)
     return filtered
@@ -117,15 +122,16 @@ def get_entity_full_form(entity_type):
 input_text = st.text_area(
     "Enter text for NER analysis",
     height=200,
-    placeholder="Type or paste your text here..."
+    placeholder="Type or paste your text here...",
+    value="Elon Musk is the CEO of Tesla, Inc. which is based in Austin, Texas. The company was founded in 2003 and produces electric vehicles."
 )
 
 # Use example if selected
-if example_text != "Select an example" and not input_text:
+if example_text != "Select an example" and not input_text.strip():
     input_text = example_text
 
 # Process the text when the button is clicked
-if st.button("Analyze Text") and input_text:
+if st.button("Analyze Text") and input_text.strip():
     with st.spinner("Loading model and processing text..."):
         # Clean the input text
         cleaned_text = clean_text(input_text)
@@ -163,42 +169,53 @@ if st.button("Analyze Text") and input_text:
                         entities_df['Confidence'] = entities_df['Confidence'].apply(lambda x: f"{x:.2%}")
                         
                         # Display the dataframe with full forms
-                        st.dataframe(entities_df[['Entity', 'Type', 'Full Form', 'Confidence']], use_container_width=True)
+                        st.dataframe(entities_df[['Entity', 'Type', 'Full Form', 'Confidence']], 
+                                   use_container_width=True, height=300)
                     
                     with col2:
                         st.subheader("📊 Entity Distribution")
                         
                         # Count entity types (using full forms for better readability)
-                        entity_full_forms = [get_entity_full_form(ent['entity_group']) for ent in filtered_results]
-                        type_counts = Counter(entity_full_forms)
+                        entity_types = [ent['entity_group'] for ent in filtered_results]
+                        type_counts = Counter(entity_types)
                         
-                        # Create a bar chart
+                        # Create a bar chart with proper scaling
                         if type_counts:
-                            fig, ax = plt.subplots(figsize=(10, 5))
-                            bars = ax.bar(type_counts.keys(), type_counts.values(), 
-                                        color=['#FF6B6B', '#4ECDC4', '#FFE66D', '#C7C7C7'])
+                            fig, ax = plt.subplots(figsize=(8, 5))
+                            
+                            # Get full forms for labels
+                            labels = [get_entity_full_form(et) for et in type_counts.keys()]
+                            values = list(type_counts.values())
+                            
+                            bars = ax.bar(labels, values, 
+                                        color=['#FF6B6B', '#4ECDC4', '#FFE66D', '#C7C7C7'][:len(labels)])
                             ax.set_ylabel('Count')
                             ax.set_xlabel('Entity Type')
                             ax.set_title('Entity Type Distribution')
-                            plt.xticks(rotation=45, ha='right')
+                            
+                            # Set proper y-axis scale
+                            max_count = max(values)
+                            ax.set_ylim(0, max_count + 0.5)
+                            ax.set_yticks(range(0, max_count + 1))
                             
                             # Add value labels on bars
                             for bar in bars:
                                 height = bar.get_height()
                                 ax.text(bar.get_x() + bar.get_width()/2., height,
-                                        f'{int(height)}', ha='center', va='bottom')
+                                        f'{int(height)}', ha='center', va='bottom', fontweight='bold')
                             
+                            plt.xticks(rotation=45, ha='right')
                             plt.tight_layout()
                             st.pyplot(fig)
                         
                         # Show entity type legend
                         st.markdown("**Entity Type Legend:**")
                         legend_html = """
-                        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px;">
-                        <b>PER</b> - Person<br>
-                        <b>ORG</b> - Organization<br>
-                        <b>LOC</b> - Location<br>
-                        <b>MISC</b> - Miscellaneous
+                        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                        <b>PER</b> - Person (Names of people)<br>
+                        <b>ORG</b> - Organization (Companies, institutions)<br>
+                        <b>LOC</b> - Location (Places, cities, countries)<br>
+                        <b>MISC</b> - Miscellaneous (Other entities)
                         </div>
                         """
                         st.markdown(legend_html, unsafe_allow_html=True)
@@ -221,48 +238,49 @@ if st.button("Analyze Text") and input_text:
                         entity_type = ent['entity_group']
                         full_form = get_entity_full_form(entity_type)
                         color = color_map.get(entity_type, '#C7C7C7')  # Default to gray
-                        label = f"<mark style='background-color: {color}; padding: 2px 4px; border-radius: 3px;'>{ent['word']} ({entity_type}: {full_form})</mark>"
+                        label = f"<mark style='background-color: {color}; padding: 2px 4px; border-radius: 3px; margin: 2px;'>{ent['word']} ({entity_type})</mark>"
                         highlighted_text = highlighted_text[:ent['start']] + label + highlighted_text[ent['end']:]
                     
-                    st.markdown(highlighted_text, unsafe_allow_html=True)
+                    # Display the highlighted text in a nice container
+                    st.markdown(
+                        f"""<div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #4ECDC4;">
+                        {highlighted_text}
+                        </div>""", 
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Show model information
+                    st.info(f"Using model: **{model_option}**")
                     
                     # Show raw JSON output
                     with st.expander("View raw output"):
                         st.json(filtered_results)
                 
                 else:
-                    st.info("No valid entities detected in the text. Try a different model or check your input text.")
+                    st.warning("No valid entities detected in the text. Try:")
+                    st.markdown("- A different model (try 'Jean-Baptiste/roberta-large-ner-english')")
+                    st.markdown("- Longer text with more named entities")
+                    st.markdown("- Clearer entity mentions (proper names)")
                     
             except Exception as e:
                 st.error(f"Error during NER processing: {str(e)}")
+                st.info("Try selecting a different model from the sidebar.")
         else:
             st.error("Failed to load the model. Please check your Hugging Face token if using a private model.")
 
-# Add some information about NER with full forms
-with st.expander("ℹ️ About Named Entity Recognition"):
+# Add troubleshooting section
+with st.expander("🔧 Troubleshooting Tips"):
     st.markdown("""
-    **Named Entity Recognition (NER)** is a natural language processing technique that identifies and classifies named entities in text into predefined categories:
+    **If entities are missing or incorrect:**
     
-    ### Entity Types and Their Full Forms:
+    1. **Try different models**: Some models work better for specific types of text
+    2. **Check text quality**: Ensure proper capitalization and punctuation
+    3. **Longer text**: Models often perform better with more context
+    4. **Specific entities**: Some models are better at certain entity types
     
-    - **PER (Person)**: Names of people, characters, or individuals
-      - *Examples: Elon Musk, Albert Einstein, Marie Curie*
-    
-    - **ORG (Organization)**: Companies, organizations, institutions, agencies
-      - *Examples: Tesla Inc., United Nations, Harvard University*
-    
-    - **LOC (Location)**: Geographical places, addresses, landmarks
-      - *Examples: Paris, Mount Everest, Pacific Ocean*
-    
-    - **MISC (Miscellaneous)**: Other entities that don't fit the above categories
-      - *Examples: Nobel Prize, Windows OS, COVID-19*
-    
-    **Technical Note**: Some models use BIO notation:
-    - **B-** prefix: Beginning of an entity
-    - **I-** prefix: Inside of an entity (continuation)
-    - Example: "B-PER" = Beginning of a Person entity
-    
-    This application uses transformer-based models from Hugging Face to perform NER. The models have been trained on large datasets to recognize entities in text.
+    **Recommended models for better accuracy:**
+    - `Jean-Baptiste/roberta-large-ner-english` - Good overall performance
+    - `dbmdz/bert-large-cased-ner-english` - Better with capitalized entities
     """)
 
 # Footer
